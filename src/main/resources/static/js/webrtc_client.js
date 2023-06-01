@@ -1,6 +1,6 @@
 'use strict';
 // create and run Web Socket connection
-const socket = new WebSocket("ws://" + window.location.host + "/signal");
+const socket = new WebSocket("wss://" + window.location.host + "/signal");
 
 // UI elements
 const videoButtonOff = document.querySelector('#video_off');
@@ -37,6 +37,11 @@ $(function(){
     start();
 });
 
+function log(message)
+{
+    console.log(message);
+}
+
 function start() {
     // add an event listener for a message being received
     socket.onmessage = function(msg) {
@@ -62,7 +67,7 @@ function start() {
                 break;
 
             case "join":
-                log('Client is starting to ' + (message.data === "true)" ? 'negotiate' : 'wait for a peer'));
+                log('Client is starting to ' + (message.data === "true" ? 'negotiate' : 'wait for a peer'));
                 handlePeerConnection(message);
                 break;
 
@@ -198,6 +203,10 @@ function handlePeerConnection(message) {
     createPeerConnection();
     getMedia(mediaConstraints);
     if (message.data === "true") {
+        handleOfferMessage(message);
+    }
+    else
+    {
         myPeerConnection.onnegotiationneeded = handleNegotiationNeededEvent;
     }
 }
@@ -283,7 +292,11 @@ function handleNegotiationNeededEvent() {
 function handleOfferMessage(message) {
     log('Accepting Offer Message');
     log(message);
-    let desc = new RTCSessionDescription(message.sdp);
+    log('message.sdp:');
+    log(message.sdp);
+    let sdp = JSON.parse(message.sdp);
+    log(sdp);
+    let desc = new RTCSessionDescription(sdp);
     //TODO test this
     if (desc != null && message.sdp != null) {
         log('RTC Signalling state: ' + myPeerConnection.signalingState);
