@@ -20,62 +20,82 @@ import java.util.Objects;
 import java.util.Optional;
 
 @Component
-public class SignalHandler extends TextWebSocketHandler {
-    @Autowired private RoomService roomService;
-
+public class SignalHandler extends TextWebSocketHandler
+{
     private final Logger logger = LoggerFactory.getLogger(this.getClass());
     private final ObjectMapper objectMapper = new ObjectMapper();
-
-    // session id to room mapping
+   @Autowired private RoomService roomService;
+    //
     private Map<String, Room> sessionIdToRoomMap = new HashMap<>();
-
-    // message types, used in signalling:
-    // text message
+    //
     private static final String MSG_TYPE_TEXT = "text";
-    // SDP Offer message
     private static final String MSG_TYPE_OFFER = "offer";
-    // SDP Answer message
     private static final String MSG_TYPE_ANSWER = "answer";
-    // New ICE Candidate message
     private static final String MSG_TYPE_ICE = "ice";
-    // join room data message
     private static final String MSG_TYPE_JOIN = "join";
-    // leave room data message
     private static final String MSG_TYPE_LEAVE = "leave";
-
+    //
     @Override
-    public void afterConnectionClosed(final WebSocketSession session, final CloseStatus status) {
+    public void afterConnectionClosed(final WebSocketSession session, final CloseStatus status)
+    {
         logger.debug("[ws] Session has been closed with status {}", status);
+        //
+        Room room = sessionIdToRoomMap.get(session.getId());
         sessionIdToRoomMap.remove(session.getId());
+        if( room != null )
+            roomService.removeClient(room, session);
     }
-
     @Override
-    public void afterConnectionEstablished(final WebSocketSession session) {
-        // webSocket has been opened, send a message to the client
-        // when data field contains 'true' value, the client starts negotiating
-        // to establish peer-to-peer connection, otherwise they wait for a counterpart
-        sendMessage(session, new WebSocketMessage("Server", MSG_TYPE_JOIN, Boolean.toString(!sessionIdToRoomMap.isEmpty()), null, null));
+    public void afterConnectionEstablished(final WebSocketSession session)
+    {
+        String sdpInitiator = null;
+        Room rm = sessionIdToRoomMap.get(session.getId());
+        if (rm != null)
+        {
+            logger.debug("[ws] afterConnectionEstablished.room: ", rm.getId());
+            logger.debug("[ws] afterConnectionEstablished.reply.sdpInitiator: ", sdpInitiator);
+            sdpInitiator = rm.getInitiatorSDP();
+        }
+        else
+        {
+            logger.debug("[ws] afterConnectionEstablished.room.creatingNewOne");
+        }
     }
-
+    protected void handleJoin(final WebSocketSession session)
+    {
+        logger.debug("[ws] handleJoin.room: ", session.getId());
+        //
+        String sdpInitiator = null;
+        Room rm = sessionIdToRoomMap.get(session.getId());
+        if (rm != null)
+        {
+            logger.debug("[ws] handleJoin.room: ", rm.getId());
+            logger.debug("[ws] handleJoin.reply.sdpInitiator: ", sdpInitiator);
+            sdpInitiator = rm.getInitiatorSDP();
+        }
+        else
+        {
+            logger.debug("[ws] handleJoin.room.creatingNewOne");
+        }
+        //
+        sendMessage(session, new WebSocketMessage("Server", MSG_TYPE_JOIN, Boolean.toString(!sessionIdToRoomMap.isEmpty()), null, sdpInitiator));
+    }
     @Override
-    protected void handleTextMessage(final WebSocketSession session, final TextMessage textMessage) {
-        // a message has been received
-        try {
+    protected void handleTextMessage(final WebSocketSession session, final TextMessage textMessage)
+    {
+        try
+        {
             WebSocketMessage message = objectMapper.readValue(textMessage.getPayload(), WebSocketMessage.class);
             logger.debug("[ws] Message of {} type from {} received", message.getType(), message.getFrom());
-            String userName = message.getFrom(); // origin of the message
-            String data = message.getData(); // payload
-
+            String userName = message.getFrom(); 
+            String data = message.getData(); 
+            //            
             Room room;
-            switch (message.getType()) {
-                // text message from client has been received
+            switch (message.getType())
+            {
                 case MSG_TYPE_TEXT:
                     logger.debug("[ws] Text message: {}", message.getData());
-                    // message.data is the text sent by client
-                    // process text message if needed
                     break;
-
-                // process signal received from client
                 case MSG_TYPE_OFFER:
                 case MSG_TYPE_ANSWER:
                 case MSG_TYPE_ICE:
@@ -85,9 +105,27 @@ public class SignalHandler extends TextWebSocketHandler {
                             candidate != null
                                     ? candidate.toString().substring(0, 64)
                                     : sdp.toString().substring(0, 64));
-
                     Room rm = sessionIdToRoomMap.get(session.getId());
                     if (rm != null) {
+                        // Qing
+                        if( rm.getInitiatorSDP() == null )
+                        {
+                            logger.debug("[ws] Signal.initiator.setSDP: {}", sdp);
+                            StringBuffer sb = new StringBuffer();
+                            sb.append("{\"type\":\"offer\", \"sdp\":\"");
+                            sb.append(sdp.toString());
+                            sb.append("\"}");
+                            String s = sb.toString().replaceAll("\r", "\\\\r");
+                            s = s.replaceAll("\n", "\\\\n");
+                            rm.setInitiatorSDP(s);
+                            //
+                            rm.setInitiator(message.getFrom());
+                        }
+                        else
+                        {
+                            logger.debug("[ws] Signal.non-initiator");
+                        }
+                        //
                         Map<String, WebSocketSession> clients = roomService.getClients(rm);
                         for(Map.Entry<String, WebSocketSession> client : clients.entrySet())  {
                             // send messages to all clients except current user
@@ -104,47 +142,51 @@ public class SignalHandler extends TextWebSocketHandler {
                         }
                     }
                     break;
-
-                // identify user and their opponent
                 case MSG_TYPE_JOIN:
-                    // message.data contains connected room id
                     logger.debug("[ws] {} has joined Room: #{}", userName, message.getData());
                     room = roomService.findRoomByStringId(data)
                             .orElseThrow(() -> new IOException("Invalid room number received!"));
-                    // add client to the Room clients list
                     roomService.addClient(room, userName, session);
                     sessionIdToRoomMap.put(session.getId(), room);
+                    //
+                    handleJoin(session);
                     break;
 
                 case MSG_TYPE_LEAVE:
-                    // message data contains connected room id
                     logger.debug("[ws] {} is going to leave Room: #{}", userName, message.getData());
-                    // room id taken by session id
                     room = sessionIdToRoomMap.get(session.getId());
-                    // remove the client which leaves from the Room clients list
                     Optional<String> client = roomService.getClients(room).entrySet().stream()
                             .filter(entry -> Objects.equals(entry.getValue().getId(), session.getId()))
                             .map(Map.Entry::getKey)
                             .findAny();
                     client.ifPresent(c -> roomService.removeClientByName(room, c));
+                    //
+                    if( room.getInitiator() != null && room.getInitiator().equals(userName) )
+                    {
+                        logger.debug("[ws] Room initiator {} is leaving, close all sessions.", room.getInitiator());
+                        room.setInitiator(null);
+                        roomService.closeAllSession(room);
+                    }
                     break;
-
-                // something should be wrong with the received message, since it's type is unrecognizable
                 default:
                     logger.debug("[ws] Type of the received message {} is undefined!", message.getType());
-                    // handle this if needed
             }
 
-        } catch (IOException e) {
+        }
+        catch (IOException e)
+        {
             logger.debug("An error occured: {}", e.getMessage());
         }
     }
-
-    private void sendMessage(WebSocketSession session, WebSocketMessage message) {
-        try {
+    private void sendMessage(WebSocketSession session, WebSocketMessage message)
+    {
+        try
+        {
             String json = objectMapper.writeValueAsString(message);
             session.sendMessage(new TextMessage(json));
-        } catch (IOException e) {
+        }
+        catch (IOException e)
+        {
             logger.debug("An error occured: {}", e.getMessage());
         }
     }
